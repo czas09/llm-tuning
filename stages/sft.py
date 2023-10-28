@@ -122,7 +122,6 @@ class TrainerForSFT(Seq2SeqTrainer):
             writer.write("\n".join(res))
 
 
-
 @dataclass
 class ComputeMetrics:
     r"""
@@ -175,14 +174,14 @@ def train_sft(
 ): 
     """实现对话微调阶段的完整流程
     
-    加载数据集
-    加载模型与 tokenizer
-    预处理数据集
-    创建 data collator
-    配置训练参数 training_args
-    创建训练器 TrainerForSFT
-    执行模型训练
-    保存权重以及训练状态
+    - 加载数据集
+    - 加载模型与 tokenizer
+    - 预处理数据集
+    - 创建 data collator
+    - 配置训练参数 training_args
+    - 创建训练器 TrainerForSFT
+    - 执行模型训练
+    - 保存权重以及训练状态
     """
     
     # 加载数据集

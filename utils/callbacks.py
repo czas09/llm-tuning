@@ -13,7 +13,30 @@ from transformers import TrainerCallback
 from transformers.trainer_utils import has_length
 from loguru import logger
 
-from utils.constants import LOG_FILE_NAME
+from utils.constants import LOG_FILE_NAME, PREFIX_CHECKPOINT_DIR
+
+
+class SavePeftModelCallback(TrainerCallback):
+
+    def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        r"""
+        Event called after a checkpoint save.
+        """
+        if args.should_save:
+            output_dir = os.path.join(args.output_dir, "{}-{}".format(PREFIX_CHECKPOINT_DIR, state.global_step))
+            model = kwargs.pop("model")
+            if getattr(model, "is_peft_model", False):
+                getattr(model, "pretrained_model").save_pretrained(output_dir)
+
+    def on_train_end(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
+        r"""
+        Event called at the end of training.
+        """
+        if args.should_save:
+            model = kwargs.pop("model")
+            if getattr(model, "is_peft_model", False):
+                getattr(model, "pretrained_model").save_pretrained(args.output_dir)
+
 
 
 class LogCallback(TrainerCallback):
