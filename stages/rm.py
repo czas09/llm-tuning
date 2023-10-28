@@ -45,7 +45,7 @@ class PairwiseDataCollatorWithPadding(DataCollatorWithPadding):
         return super().__call__(features)
 
 
-class PairwiseTrainer(Trainer):
+class TrainerForRewardModel(Trainer):
     r"""
     Inherits PeftTrainer to compute pairwise loss.
     """
@@ -169,7 +169,7 @@ def run_rm(
     training_args = Seq2SeqTrainingArguments(**training_args_dict)
 
     # 初始化训练器
-    trainer = PairwiseTrainer(
+    trainer = TrainerForRewardModel(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
