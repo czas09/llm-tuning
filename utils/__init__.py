@@ -6,4 +6,4 @@ from .model import (
     load_valuehead_params, 
 )
 from .ploting import plot_loss
-from .utils import get_logits_processor, AverageMeter
+from .training import get_logits_processor, AverageMeter
