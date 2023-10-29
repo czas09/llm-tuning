@@ -8,8 +8,10 @@ from typing import Optional, List, Any, Dict, Tuple, Literal
 import torch
 from torch.optim import AdamW
 from transformers import (
-    DataCollatorWithPadding, Seq2SeqTrainingArguments, TrainerCallback, 
-    GenerationConfig, Trainer, TrainerState, TrainerControl, PreTrainedModel
+    Seq2SeqTrainingArguments, 
+    DataCollatorWithPadding, 
+    Trainer, TrainerState, TrainerControl, TrainerCallback, 
+    GenerationConfig, PreTrainedModel, 
 )
 from transformers.optimization import get_scheduler
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
@@ -30,7 +32,7 @@ def replace_model(
         model: AutoModelForCausalLMWithValueHead, 
         target: Literal["default", "reward"]
 ) -> None: 
-    """替换模型组件"""
+    """替换模型组件，PPO 训练时模型本体还是 valuehead"""
     
     if target == "reward":     # save default head temporarily
         valuehead_state_dict: Dict[str, torch.Tensor] = model.v_head.state_dict()
@@ -71,16 +73,16 @@ def restore_layernorm(
 
 class TrainerForPPO(PPOTrainer, Trainer):
     r"""
-    继承 transformers.Trainer 与 trl.PPOTrainer，实现了一系列训练接口
+    继承 transformers.Trainer 与 trl.PPOTrainer，实现了 PPO 训练功能
     """
 
     def __init__(
         self,
-        model_args: "ModelArguments",
-        training_args: "Seq2SeqTrainingArguments",
-        finetuning_args: "FinetuningArguments",
-        generating_args: "GeneratingArguments",
-        callbacks: List["TrainerCallback"],
+        model_args: ModelArguments,
+        training_args: Seq2SeqTrainingArguments,
+        finetuning_args: FinetuningArguments,
+        generating_args: GeneratingArguments,
+        callbacks: List[TrainerCallback],
         **kwargs
     ):
         
@@ -104,8 +106,7 @@ class TrainerForPPO(PPOTrainer, Trainer):
     def ppo_train(self) -> None:
         r"""
         Implements training loop for the PPO stage, like _inner_training_loop() in Huggingface's Trainer.
-
-        TODO(@zyw)
+        TODO(@zyw): 这里实现了模型训练的 epoch 循环，看了下 trl.PPOTrainer 源码中只实现了单个步骤 step 的更新？
         """
 
         total_train_batch_size = (
@@ -131,35 +132,37 @@ class TrainerForPPO(PPOTrainer, Trainer):
             logger.info(f"  Total optimization steps = {max_steps}")
             logger.info(f"  Number of trainable parameters = {count_parameters(self.model)[0]}")
 
-        unwrapped_model: "AutoModelForCausalLMWithValueHead" = self.accelerator.unwrap_model(self.model)
+        unwrapped_model: AutoModelForCausalLMWithValueHead = self.accelerator.unwrap_model(self.model)
         dataiter = iter(self.dataloader)
         steps_trained = 0
         loss_meter = AverageMeter()
         reward_meter = AverageMeter()
         self.log_callback.on_train_begin(self.args, self.state, self.control)
 
+        # PPO 训练 steps 循环
         for step in tqdm(range(max_steps), disable=not self.is_local_process_zero()):
             batch = next(dataiter)
             steps_trained += 1
 
-            # Cast to inference mode
+            # 将模型转换至推理模式
             unwrapped_model.gradient_checkpointing_disable()
             unwrapped_model.config.use_cache = True
             self.model.eval()
 
             # Get inputs
             queries, responses = self.get_inputs(batch)
-            self.tokenizer.padding_side = "right" # change padding side
+            self.tokenizer.padding_side = "right"    # change padding side
+            # 使用给定的奖励模型计算奖励得分
             rewards = self.get_rewards(queries, responses, unwrapped_model)
 
-            # Cast to training mode
+            # 将模型转换至训练模式
             unwrapped_model.gradient_checkpointing_enable()
             unwrapped_model.config.use_cache = False
             self.model.train()
 
-            # Run PPO step
+            # TODO(@zyw): Run PPO step
             stats = self.step(queries, responses, rewards)
-            self.tokenizer.padding_side = "left" # restore padding side
+            self.tokenizer.padding_side = "left"    # restore padding side
             loss_meter.update(float(stats["ppo/loss/total"]), n=len(rewards))
             reward_meter.update(torch.stack(rewards).mean().item(), n=len(rewards))
 
@@ -216,7 +219,7 @@ class TrainerForPPO(PPOTrainer, Trainer):
         if self.finetuning_args.upcast_layernorm:
             layernorm_params = dump_layernorm(self.model)
 
-        unwrapped_model: "AutoModelForCausalLMWithValueHead" = self.accelerator.unwrap_model(self.model)
+        unwrapped_model: AutoModelForCausalLMWithValueHead = self.accelerator.unwrap_model(self.model)
         response: torch.Tensor = unwrapped_model.generate(
             generation_config=self.generation_config,
             logits_processor=get_logits_processor(),
@@ -233,14 +236,14 @@ class TrainerForPPO(PPOTrainer, Trainer):
             response_index = (response[i] != self.tokenizer.pad_token_id).nonzero()
 
             if len(response_index) == 0:
-                response_length = 1 # allow empty response
+                response_length = 1                            # allow empty response
             elif self.tokenizer.pad_token_id == self.tokenizer.eos_token_id:
-                response_length = response_index[-1] + 2 # save the EOS token
+                response_length = response_index[-1] + 2       # save the EOS token
             else:
                 response_length = response_index[-1] + 1
 
-            queries.append(query[i, query_length:]) # remove padding from left
-            responses.append(response[i, :response_length]) # remove padding from right
+            queries.append(query[i, query_length:])            # remove padding from left
+            responses.append(response[i, :response_length])    # remove padding from right
 
         return queries, responses
 
@@ -258,16 +261,16 @@ class TrainerForPPO(PPOTrainer, Trainer):
         replace_model(unwrapped_model, target="reward")
         batch = self.prepare_model_inputs(queries, responses)
 
-        with torch.cuda.amp.autocast(dtype=self.model_args.compute_dtype): # support bf16
+        with torch.cuda.amp.autocast(dtype=self.model_args.compute_dtype):    # support bf16
             _, _, values = self.model(**batch, output_hidden_states=True, return_dict=True)
 
-        if values.size(0) != batch["input_ids"].size(0): # adapt to chatglm2
+        if values.size(0) != batch["input_ids"].size(0):                      # adapt to chatglm2
             values = torch.transpose(values, 0, 1)
 
         rewards = []
         for i in range(values.size(0)):
-            end_index = batch["attention_mask"][i].nonzero()[-1] # use the score on the EOS token
-            rewards.append(values[i, end_index].float().detach().cpu()) # use fp32 type
+            end_index = batch["attention_mask"][i].nonzero()[-1]              # use the score on the EOS token
+            rewards.append(values[i, end_index].float().detach().cpu())       # use fp32 type
 
         replace_model(unwrapped_model, target="default")
         return rewards
@@ -275,7 +278,7 @@ class TrainerForPPO(PPOTrainer, Trainer):
     @PPODecorators.empty_cuda_cache()
     def batched_forward_pass(
         self,
-        model: "AutoModelForCausalLMWithValueHead",
+        model: AutoModelForCausalLMWithValueHead,
         queries: torch.Tensor,
         responses: torch.Tensor,
         model_inputs: dict,
@@ -356,11 +359,11 @@ class TrainerForPPO(PPOTrainer, Trainer):
 
 
 def run_ppo(
-    model_args: ModelArguments,
-    data_args: DataArguments,
-    training_args: Seq2SeqTrainingArguments,
-    finetuning_args: FinetuningArguments,
-    generating_args: GeneratingArguments,
+    model_args: ModelArguments, 
+    data_args: DataArguments, 
+    training_args: Seq2SeqTrainingArguments, 
+    finetuning_args: FinetuningArguments, 
+    generating_args: GeneratingArguments, 
     callbacks: Optional[List[TrainerCallback]] = None, 
 ) -> None: 
     """实现 PPO 训练的完整流程
@@ -375,11 +378,12 @@ def run_ppo(
     # 对数据集进行预处理
     dataset = prep_dataset(dataset, tokenizer, data_args, training_args, stage="ppo")
     # use left-padding in generation while using right-padding in training
+    # TODO(@zyw): 文本生成时采用 left-padding，模型训练时采用 right-padding
     tokenizer.padding_side = "left"
     # 创建 data collator
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    # TODO(@zyw): 创建训练配置项
+    # TODO(@zyw): 为 PPO 训练创建配置项
     ppo_config = PPOConfig(
         model_name=model_args.model_name_or_path,
         learning_rate=training_args.learning_rate,
@@ -397,7 +401,7 @@ def run_ppo(
         accelerator_kwargs={"step_scheduler_with_optimizer": False}
     )
 
-    # 获取一系列训练参数
+    # 更新一系列训练参数
     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=training_args.learning_rate)
     total_train_batch_size = (
         training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps * training_args.world_size
@@ -410,7 +414,7 @@ def run_ppo(
         num_training_steps=num_training_steps
     )
 
-    # 初始化训练器
+    # 初始化 PPO 训练器
     ppo_trainer = TrainerForPPO(
         model_args=model_args,
         training_args=training_args,
@@ -428,9 +432,14 @@ def run_ppo(
     )
 
     # PPO 训练
-    if training_args.do_train:
+    if training_args.do_train: 
+        # 执行训练
         ppo_trainer.ppo_train()
+        # 保存模型权重
         ppo_trainer.save_model()
-        ppo_trainer.save_state() # must be called after save_model to have a folder
-        if ppo_trainer.is_world_process_zero() and model_args.plot_loss:
+        # 保存训练状态记录
+        ppo_trainer.save_state()    # must be called after save_model to have a folder
+
+        if ppo_trainer.is_world_process_zero() and model_args.plot_loss: 
+            # 绘制损失曲线
             plot_loss(training_args.output_dir, keys=["loss", "reward"])
