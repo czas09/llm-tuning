@@ -8,7 +8,12 @@ import os.path
 from typing import Dict, Sequence, Tuple, Union, Optional, List, Any
 
 import torch
-from transformers import Seq2SeqTrainingArguments, Trainer, TrainerCallback, DataCollatorWithPadding
+from transformers import (
+    Seq2SeqTrainingArguments, 
+    DataCollatorWithPadding, 
+    Trainer, 
+    TrainerCallback, 
+)
 from transformers.trainer import PredictionOutput
 from transformers.modeling_utils import PreTrainedModel
 import numpy as np
@@ -23,17 +28,18 @@ from model_loader import load_model_and_tokenizer
 
 # TODO(@zyw)
 @dataclass
-class PairwiseDataCollatorWithPadding(DataCollatorWithPadding):
+class DataCollatorForPairwiseData(DataCollatorWithPadding):
     r"""
     Data collator for pairwise data.
     """
 
     def __call__(self, features: Sequence[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         r"""
-        Pads batched data to the longest sequence in the batch.
+        将批次中的数据都填充至本批次中的最大长度
 
         We generate 2 * n examples where the first n examples represent chosen examples and
         the last n examples represent rejected examples.
+        批次中的数据有 2n 条，其中前 n 条是选中数据，后 n 条是拒绝数据
         """
         features = [
             {
@@ -48,32 +54,33 @@ class PairwiseDataCollatorWithPadding(DataCollatorWithPadding):
 class TrainerForRewardModel(Trainer):
     r"""
     Inherits PeftTrainer to compute pairwise loss.
+    主要是改变 transformers.Trainer 的损失值计算方法，这里需要为奖励模型计算 pairwise loss
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.can_return_loss = True # override property to return eval_loss
+        self.can_return_loss = True     # override property to return eval_loss
 
     def compute_loss(
-        self,
-        model: PreTrainedModel,
-        inputs: Dict[str, torch.Tensor],
-        return_outputs: Optional[bool] = False
+            self,
+            model: PreTrainedModel,
+            inputs: Dict[str, torch.Tensor],
+            return_outputs: Optional[bool] = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
         r"""
         Computes pairwise loss. The first n examples are chosen and the last n examples are rejected.
-
-        Subclass and override to inject custom behavior.
+        前 n 条是选中数据，后 n 条是拒绝数据
 
         Note that the first element will be removed from the output tuple. 
         See: https://github.com/huggingface/transformers/blob/v4.30.2/src/transformers/trainer.py#L3509
         """
-        # Compute rewards
+
+        # 计算奖励值
         _, _, values = model(**inputs, output_hidden_states=True, return_dict=True)
-        if values.size(0) != inputs["input_ids"].size(0): # adapt to chatglm2
+        if values.size(0) != inputs["input_ids"].size(0):    # adapt to chatglm2
             values = torch.transpose(values, 0, 1)
 
-        # Split the inputs and rewards into two parts, chosen and rejected
+        # 将 input ids 和计算得到的奖励值划分为 chosen 和 rejected 两部分
         batch_size = inputs["input_ids"].size(0) // 2
         chosen_input_ids, rejected_input_ids = inputs["input_ids"][:batch_size], inputs["input_ids"][batch_size:]
         chosen_attn_mask, rejected_attn_mask = (
@@ -83,6 +90,7 @@ class TrainerForRewardModel(Trainer):
         chosen_scores, rejected_scores = [], []
 
         # Compute pairwise loss. Only backprop on the different tokens before padding
+        # 计算 pairwise loss
         # Inspired by: https://github.com/CarperAI/trlx/blob/main/examples/summarize_rlhf/reward_model/reward_model.py
         loss = 0
         for i in range(batch_size):
@@ -100,9 +108,10 @@ class TrainerForRewardModel(Trainer):
             assert div_index > 0
             chosen_trunc_rewards = chosen_rewards[i, div_index:end_index]
             rejected_trunc_rewards = rejected_rewards[i, div_index:end_index]
-            if return_outputs: # use the score on the EOS token for inference
+            if return_outputs:    # use the score on the EOS token for inference
                 chosen_scores.append(chosen_rewards[i, chosen_length-1])
                 rejected_scores.append(rejected_rewards[i, rejected_length-1])
+            # 累积损失值
             loss += -torch.nn.functional.logsigmoid(chosen_trunc_rewards - rejected_trunc_rewards).mean()
 
         loss = loss / batch_size
@@ -161,7 +170,7 @@ def run_rm(
     # 预处理数据集
     dataset = prep_dataset(dataset, tokenizer, data_args, training_args, stage="rm")
     # 创建 data collator
-    data_collator = PairwiseDataCollatorWithPadding(tokenizer, pad_to_multiple_of=4)
+    data_collator = DataCollatorForPairwiseData(tokenizer, pad_to_multiple_of=4)
 
     # 配置训练参数
     training_args_dict = training_args.to_dict()
