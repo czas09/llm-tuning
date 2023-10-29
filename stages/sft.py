@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os.path
-from typing import Any, Optional, List, Sequence, Union, Tuple, Dict
+from typing import Any, Dict, List, Optional, Tuple, Sequence, Union
 
 import torch
 import torch.nn as nn
@@ -262,5 +262,3 @@ def train_sft(
         trainer.log_metrics("predict", predict_results.metrics)
         trainer.save_metrics("predict", predict_results.metrics)
         trainer.save_predictions(predict_results)
-
-
