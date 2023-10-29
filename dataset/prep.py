@@ -59,7 +59,9 @@ def prep_dataset(
         }
         return result
 
-    def preprocess_supervised_dataset(examples: Dict[str, List[Any]]) -> Dict[str, Any]:
+    def preprocess_supervised_dataset(examples: Dict[str, List[Any]]) -> Dict[str, Any]: 
+        """预处理监督数据集"""
+        
         # build inputs with format `<bos> X Y <eos>` and labels with format `<ignore> ... <ignore> Y <eos>`
         # for multiturn examples, we only mask the prompt part in each prompt-response pair.
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
