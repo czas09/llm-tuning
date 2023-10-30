@@ -23,41 +23,48 @@
 ## 代码文件说明
 
 ```
-configs/              训练参数配置文件
+configs/               训练参数配置文件
     ...
-dataset/              数据处理模块
+dataset/               数据处理模块
     load.py
     prep.py
     utils.py
-hparams/              参数定义
+hparams/               参数定义
     data_args.py
     finetuning_args.py
     generating_args.py
     model_args.py
-patches/              训练加速、长程建模等 (WIP)
+patches/               训练加速、长程建模等 (WIP)
     ...
-stages/               训练阶段：SFT、RM、PPO、DPO
-    dpo.py                DPO (WIP)
-    ppo.py                实现 PPO 训练的完整流程
-    pt.py                 预训练 (WIP)
-    sft.py                实现对话微调阶段的完整训练流程
-    rm.py                 实现奖励模型 Reward Model 的完整训练流程
-    sft.py
-utils/                工具脚本
+stages/                训练阶段：SFT、RM、PPO、DPO
+    pt.py                  （继续）预训练 (WIP)
+    sft.py                 实现对话微调阶段的完整训练流程
+    rm.py                  实现奖励模型 Reward Model 的完整训练流程
+    ppo.py                 实现 PPO 训练的完整流程
+    dpo.py                 DPO (WIP)
+utils/                 工具脚本
     callbacks.py
     constants.py
+    model.py
     ploting.py
-    utils.py
-argument_parser.py    参数解析模块
-model_loader.py       模型加载模块
-train.py              （主入口）训练启动脚本
+    training.py
+argument_parser.py     参数解析模块
+model_loader.py        模型加载模块
+prompt_templates.py    对话模板
+train.py               （主入口）训练启动脚本
 ```
 
 ## 使用方法
 
-TODO
+* 模型微调
+
+填好相关配置文件 (WIP) ，启动 train.py
+
+* 模型评估 (WIP)
 
 ## 待办事项
 
+* 完善微调相关代码
+* 参数配置文件
 * 数据集
 * 模型评估
