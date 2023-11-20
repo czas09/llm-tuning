@@ -20,6 +20,14 @@
   * PPO
   * DPO (WIP)
 
+## Requirements
+
+```
+transformers==4.33.1
+trl==0.7.2
+...
+```
+
 ## 代码文件说明
 
 ```
@@ -29,12 +37,16 @@ dataset/               数据处理模块
     load.py
     prep.py
     utils.py
+datasets/              训练语料
+    ...
 hparams/               参数定义
     data_args.py
     finetuning_args.py
     generating_args.py
     model_args.py
 patches/               训练加速、长程建模等 (WIP)
+    ...
+scripts/               训练启动脚本
     ...
 stages/                训练阶段：SFT、RM、PPO、DPO
     pt.py                  （继续）预训练 (WIP)
@@ -80,7 +92,7 @@ train.py               （主入口）训练启动脚本
 ## 待办事项
 
 * 完善微调相关代码
-* 参数配置文件
-* 数据集
+* 参数配置文件 ./scripts/...
+* 数据集加载与 collator 相关流程与代码
 * 模型评估
 * 不同模型和训练方法下显卡需求量说明
