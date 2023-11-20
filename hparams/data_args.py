@@ -35,8 +35,8 @@ class DataArguments:
         metadata={"help": "The name of provided dataset(s) to use. Use commas to separate multiple datasets."}
     )
     dataset_dir: Optional[str] = field(
-        default="data",
-        metadata={"help": "The name of the folder containing datasets."}
+        default="datasets",
+        metadata={"help": "存放训练语料文件的根目录。"}
     )
     split: Optional[str] = field(
         default="train",

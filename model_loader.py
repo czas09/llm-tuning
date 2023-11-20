@@ -303,6 +303,7 @@ def load_model_and_tokenizer(
         **config_kwargs
     )
 
+    is_mergeable = True
     # 替换 Qwen 和 Baichuan2 模型中自定义的 generate 接口
     if isinstance(model, PreTrainedModel) and "GenerationMixin" not in str(model.generate.__func__):
         model.generate = MethodType(PreTrainedModel.generate, model)

@@ -1,18 +1,31 @@
 import torch
 from types import MethodType
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import os
 import torch
 from transformers.trainer import WEIGHTS_NAME
+from loguru import logger
 
 
+from utils.constants import LAYERNORM_NAMES
 
-from constants import LAYERNORM_NAMES
+from transformers.modeling_utils import PreTrainedModel
+from hparams import FinetuningArguments
 
-if TYPE_CHECKING:
-    from transformers.modeling_utils import PreTrainedModel
-    from hparams import FinetuningArguments
+try: 
+    from transformers.utils import (
+        is_torch_bf16_cpu_available, 
+        is_torch_bf16_gpu_available, 
+        is_torch_cuda_available, 
+        is_torch_npu_available, 
+    )
+    _is_fp16_available = is_torch_npu_available() or is_torch_cuda_available()
+    _is_bf16_available = is_torch_bf16_gpu_available() or is_torch_bf16_cpu_available()
+
+except ImportError: 
+    _is_fp16_available = torch.cuda.is_available()
+    _is_bf16_available = torch.cuda.is_bf16_supported()
 
 
 def find_all_linear_modules(
@@ -91,7 +104,7 @@ def prepare_model_for_training(
 
         model.gradient_checkpointing_enable()
         model.config.use_cache = False # turn off when gradient checkpointing is enabled
-        logger.info("Gradient checkpointing enabled.")
+        logger.info("启用梯度检查点（gradient checkpointing）技术。")
 
     if finetuning_args.finetuning_type != "full" and hasattr(model, output_layer_name):
         output_layer = getattr(model, output_layer_name)
