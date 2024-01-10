@@ -54,23 +54,28 @@ class TrainerForSFT(Seq2SeqTrainer):
 
         Subclass and override to inject custom behavior.
         """
+        
+        labels = inputs["labels"].detach().clone() if "labels" in inputs else None
+        
         if self.args.predict_with_generate:
             assert self.tokenizer.padding_side == "left", "This method only accepts left-padded tensor."
-            assert self.tokenizer.pad_token_id is not None, "Pad token is required."
+            
             prompt_len, label_len = inputs["input_ids"].size(-1), inputs["labels"].size(-1)
             if prompt_len > label_len:
                 inputs["labels"] = self._pad_tensors_to_target_len(inputs["labels"], inputs["input_ids"])
-            if label_len > prompt_len:
-                inputs["input_ids"] = self._pad_tensors_to_target_len(inputs["input_ids"], inputs["labels"])
-                if "attention_mask" in inputs:
-                    inputs["attention_mask"] = self._pad_tensors_to_target_len(
-                        inputs["attention_mask"], inputs["labels"], pad_token_id=0
-                    )
-                if "position_ids" in inputs:
-                    inputs["position_ids"] = self._pad_tensors_to_target_len(
-                        inputs["position_ids"], inputs["labels"], pad_token_id=0
-                    )
+            if label_len > prompt_len:    # truncate the labels instead of padding the inputs (llama2 fp16 compatibility)
+                inputs["labels"] = inputs["labels"][:, :prompt_len]
+                # inputs["input_ids"] = self._pad_tensors_to_target_len(inputs["input_ids"], inputs["labels"])
+                # if "attention_mask" in inputs:
+                #     inputs["attention_mask"] = self._pad_tensors_to_target_len(
+                #         inputs["attention_mask"], inputs["labels"], pad_token_id=0
+                #     )
+                # if "position_ids" in inputs:
+                #     inputs["position_ids"] = self._pad_tensors_to_target_len(
+                #         inputs["position_ids"], inputs["labels"], pad_token_id=0
+                #     )
 
+        # ignore the returned labels (may be truncated)
         loss, generated_tokens, labels = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys
         )
@@ -89,8 +94,12 @@ class TrainerForSFT(Seq2SeqTrainer):
         r"""
         Pads the tensor to the same length as the target tensor.
         """
-        pad_token_id = pad_token_id if pad_token_id is not None else self.tokenizer.pad_token_id
-        padded_tensor = pad_token_id * torch.ones_like(tgt_tensor)
+        assert self.tokenizer.pad_token_id is not None, "Pad token is required."
+        # pad_token_id = pad_token_id if pad_token_id is not None else self.tokenizer.pad_token_id
+        # padded_tensor = pad_token_id * torch.ones_like(tgt_tensor)
+        # padded_tensor[:, -src_tensor.shape[-1]:] = src_tensor # adopt left-padding
+        # return padded_tensor.contiguous() # in contiguous memory
+        padded_tensor = self.tokenizer.pad_token_id * torch.ones_like(tgt_tensor)
         padded_tensor[:, -src_tensor.shape[-1]:] = src_tensor # adopt left-padding
         return padded_tensor.contiguous() # in contiguous memory
 
@@ -109,15 +118,23 @@ class TrainerForSFT(Seq2SeqTrainer):
         output_prediction_file = os.path.join(self.args.output_dir, "generated_predictions.jsonl")
         logger.info(f"Saving prediction results to {output_prediction_file}")
 
-        preds = np.where(predict_results.predictions != IGNORE_INDEX, predict_results.predictions, self.tokenizer.pad_token_id)
         labels = np.where(predict_results.label_ids != IGNORE_INDEX, predict_results.label_ids, self.tokenizer.pad_token_id)
+        preds = np.where(predict_results.predictions != IGNORE_INDEX, predict_results.predictions, self.tokenizer.pad_token_id)
+        # labels = np.where(predict_results.label_ids != IGNORE_INDEX, predict_results.label_ids, self.tokenizer.pad_token_id)
 
+        for i in range(len(preds)):
+            pad_len = np.nonzero(preds[i] != self.tokenizer.pad_token_id)[0]
+            if len(pad_len):
+                preds[i] = np.concatenate((preds[i][pad_len[0]:], preds[i][:pad_len[0]]), axis=-1) # move pad token to last
+
+        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=False)
         decoded_preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+        # decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
 
         with open(output_prediction_file, "w", encoding="utf-8") as writer:
             res: List[str] = []
-            for pred, label in zip(decoded_preds, decoded_labels):
+            # for pred, label in zip(decoded_preds, decoded_labels):
+            for label, pred in zip(decoded_labels, decoded_preds):
                 res.append(json.dumps({"label": label, "predict": pred}, ensure_ascii=False))
             writer.write("\n".join(res))
 
@@ -196,7 +213,7 @@ def train_sft(
     # 创建 data collator
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer, 
-        pad_to_multiple_of=4,    # for shift short attention
+        pad_to_multiple_of=8,    # for shift short attention
         label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id, 
     )
 
@@ -204,7 +221,7 @@ def train_sft(
     training_args_dict = training_args.to_dict()
     training_args_dict.update(dict(
         generation_max_length=training_args.generation_max_length or data_args.cutoff_len, 
-        generation_num_beams=data_args.eval_num_beams or training_args.generation_num_beams
+        generate_num_beams=data_args.eval_num_beams or training_args.generation_num_beams
     ))
     training_args = Seq2SeqTrainingArguments(**training_args_dict)
 
@@ -231,14 +248,16 @@ def train_sft(
     if training_args.do_train: 
         # 执行训练流程
         train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+
+        # 保存训练好的模型权重和 tokenizer
+        trainer.save_model()
         # 记录评估指标结果
         trainer.log_metrics("train", train_result.metrics)
         # 保存评估指标结果
         trainer.save_metrics("train", train_result.metrics)
         # 保存训练过程产生的记录文件
         trainer.save_state()
-        # 保存训练好的模型权重和 tokenizer
-        trainer.save_model()
+        
         if trainer.is_world_process_zero() and model_args.plot_loss: 
             plot_loss(training_args.output_dir, keys=["loss", "eval_loss"])
     
