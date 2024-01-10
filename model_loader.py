@@ -45,16 +45,18 @@ from utils import (
     prepare_model_for_training, 
     find_all_linear_modules, 
     load_valuehead_params, 
+    # is_flash_attn2_available, 
+    # get_current_device, 
 )
 from patches import llama_patch as LlamaPatches
 
 
 # 校验依赖库版本
-check_min_version("4.31.0")
-require_version("datasets>=2.12.0", "To fix: pip install datasets>=2.12.0")
+require_version("transformers>=4.31.0,<4.35.0", "To fix: pip install \"transformers>=4.31.0,<4.35.0\"")
+require_version("datasets>=2.14.0", "To fix: pip install datasets>=2.14.0")
 require_version("accelerate>=0.21.0", "To fix: pip install accelerate>=0.21.0")
-require_version("peft>=0.4.0", "To fix: pip install peft>=0.4.0")
-require_version("trl>=0.7.2", "To fix: pip install trl>=0.7.2")
+require_version("peft>=0.6.0", "To fix: pip install peft>=0.6.0")
+require_version("trl>=0.7.4", "To fix: pip install trl>=0.7.4")
 
 
 def init_adapter(
@@ -62,7 +64,7 @@ def init_adapter(
     model_args: ModelArguments,
     finetuning_args: FinetuningArguments,
     is_trainable: bool,
-    is_mergeable: bool
+    # is_mergeable: bool
 ) -> PreTrainedModel:
     r"""初始化模型适配器 model adapters，用于参数高效训练方法
 
@@ -70,6 +72,11 @@ def init_adapter(
 
     注意这里的可训练参数必须转换到 float32 类型
     """
+    
+    # 模型评估环节
+    if (not is_trainable) and model_args.checkpoint_dir is None:
+        logger.info("Checkpoint is not found at evaluation, load the original model.")
+        return model
 
     if finetuning_args.finetuning_type == "none" and is_trainable:
         raise ValueError("You cannot use finetuning_type=none while training.")
@@ -86,13 +93,23 @@ def init_adapter(
     # ==========================================================================
     elif finetuning_args.finetuning_type == "freeze":
         logger.info("采用 Freeze 训练方法")
-        num_layers = getattr(model.config, "num_layers")
+        num_layers = (
+            getattr(model.config, "num_hidden_layers", None)
+            or getattr(model.config, "num_layers", None)
+            or getattr(model.config, "n_layer", None)
+        )
+        if not num_layers:
+            raise ValueError("当前模型未支持 Freeze 微调，请检查相关模型参数。")
         if finetuning_args.num_layer_trainable > 0:    # fine-tuning the last n layers if num_layer_trainable > 0
             trainable_layer_ids = [num_layers - k - 1 for k in range(finetuning_args.num_layer_trainable)]
         else:                                          # fine-tuning the first n layers if num_layer_trainable < 0
             trainable_layer_ids = [k for k in range(-finetuning_args.num_layer_trainable)]
 
-        trainable_layers = ["{:d}.{}".format(idx, finetuning_args.name_module_trainable) for idx in trainable_layer_ids]
+        trainable_layers = []
+        for module_name in finetuning_args.name_module_trainable:
+            for idx in trainable_layer_ids:
+                trainable_layers.append("{:d}.{}".format(idx, module_name))
+
         for name, param in model.named_parameters():
             if not any(trainable_layer in name for trainable_layer in trainable_layers): 
                 # 冻结这些层可训练参数
@@ -105,12 +122,17 @@ def init_adapter(
     # ==========================================================================
     elif finetuning_args.finetuning_type == "lora": 
         logger.info("采用 LoRA 训练方法")
-        latest_checkpoint = None
-
+        checkpoint_to_resume = None
+        
         if model_args.checkpoint_dir is not None:
+            is_mergeable = True
+            if getattr(model, "quantization_method", None) == "gptq":
+                assert len(model_args.checkpoint_dir) == 1, "GPTQ 量化仅支持合并单个 checkpoint。"
+                is_mergeable = False
+
             if (is_trainable and finetuning_args.resume_lora_training) or (not is_mergeable):    # 继续微调
-                checkpoints_to_merge, latest_checkpoint = model_args.checkpoint_dir[:-1], model_args.checkpoint_dir[-1]
-            else: 
+                checkpoints_to_merge, checkpoint_to_resume = model_args.checkpoint_dir[:-1], model_args.checkpoint_dir[-1]
+            else:
                 checkpoints_to_merge = model_args.checkpoint_dir
 
             # TODO(@zyw)
@@ -118,16 +140,16 @@ def init_adapter(
                 model = PeftModel.from_pretrained(model, checkpoint)
                 model = model.merge_and_unload()
 
-            if len(checkpoints_to_merge) > 0: 
+            if len(checkpoints_to_merge) > 0:
                 logger.info("Merged {} model checkpoint(s).".format(len(checkpoints_to_merge)))
 
-            if latest_checkpoint is not None:     # resume lora training or quantized inference
-                model = PeftModel.from_pretrained(model, latest_checkpoint, is_trainable=is_trainable)
+            if checkpoint_to_resume is not None: # resume lora training
+                model = PeftModel.from_pretrained(model, checkpoint_to_resume, is_trainable=is_trainable)
 
-        if is_trainable and latest_checkpoint is None:    # 训练新的 LoRA 权重
+        if is_trainable and checkpoint_to_resume is None:    # 训练新的 LoRA 权重
             # 确定 LoRA 训练位置
             if len(finetuning_args.lora_target) == 1 and finetuning_args.lora_target[0] == "all":    # 对所有的 Linear 层训练 LoRA 权重
-                target_modules = find_all_linear_modules(model, model_args.quantization_bit)
+                target_modules = find_all_linear_modules(model)
             else:                                                                                    # 对指定层训练 LoRA 权重
                 target_modules = finetuning_args.lora_target
 
@@ -141,12 +163,8 @@ def init_adapter(
                 target_modules=target_modules,
                 modules_to_save=finetuning_args.additional_target
             )
-            # 给模型加上 LoRA 部分
             model = get_peft_model(model, lora_config)
             
-            if id(model.peft_config) != id(model.base_model.peft_config): # https://github.com/huggingface/peft/issues/923
-                model.base_model.peft_config = model.peft_config
-
     if model_args.checkpoint_dir is not None:
         logger.info("Loaded fine-tuned model from checkpoint(s): {}".format(",".join(model_args.checkpoint_dir)))
 
@@ -198,10 +216,10 @@ def load_model_and_tokenizer(
         tokenizer._pad = MethodType(PreTrainedTokenizerBase._pad, tokenizer)
 
     # 设置模型的数据类型
-    if model_args.compute_dtype is not None:    # 训练阶段
-        setattr(config, "torch_dtype", model_args.compute_dtype)
-    else:                                       # 推理阶段，priority: bf16 > fp16 > fp32
+    if model_args.compute_dtype is None:    # 推理阶段，priority: bf16 > fp16 > fp32
         model_args.compute_dtype = infer_optim_dtype(model_dtype=getattr(config, "torch_dtype", None))
+    # 训练阶段
+    setattr(config, "torch_dtype", model_args.compute_dtype)
 
     # 修复 Qwen 模型的配置项
     # 修复前：bf16, fp16, fp32 = false, false, false
@@ -212,21 +230,16 @@ def load_model_and_tokenizer(
 
     # TODO(@zyw): 设置 RoPE scaling，用于超长程文本生成
     if model_args.rope_scaling is not None: 
-        if hasattr(config, "use_dynamic_ntk"):    # 针对 Qwen 模型
-            if is_trainable: 
-                logger.warning("Qwen model does not support RoPE scaling in training.")
-            else:
-                setattr(config, "use_dynamic_ntk", True)
-                setattr(config, "use_logn_attn", True)
-                logger.info("Using dynamic NTK scaling.")
-
-        elif hasattr(config, "rope_scaling"):     # 针对 LLaMA and Falcon 模型
+        if not hasattr(config, "rope_scaling"): 
+            logger.warning("当前模型尚不支持 RoPE scaling！")
+        else: 
             if is_trainable:
                 if model_args.rope_scaling == "dynamic":
                     logger.warning(
                         "Dynamic NTK may not work well with fine-tuning. "
                         "See: https://github.com/huggingface/transformers/pull/24653"
                     )
+
                 current_max_length = getattr(config, "max_position_embeddings", None)
                 if current_max_length and model_args.model_max_length > current_max_length:
                     scaling_factor = float(math.ceil(model_args.model_max_length / current_max_length))
@@ -241,23 +254,20 @@ def load_model_and_tokenizer(
                 model_args.rope_scaling, scaling_factor
             ))
 
-        else:
-            logger.warning("Current model does not support RoPE scaling.")
-
     # TODO(@zyw): 设置 FlashAttention-2，用于训练加速与推理加速
-    if model_args.flash_attn: 
-        if getattr(config, "model_type", None) == "llama": 
-            # TODO(@zyw)
-            LlamaModule.LlamaAttention = LlamaPatches.LlamaFlashAttention2
-            LlamaModule.LlamaModel._prepare_decoder_attention_mask = LlamaPatches._prepare_decoder_attention_mask
-            logger.info("Using FlashAttention-2 for faster training and inference.")
-
-        elif getattr(config, "model_type", None) == "qwen": 
-            logger.info("Qwen 模型原生支持 FlashAttention，无需额外设置。")
-
-        else: 
-            logger.warning("Current model does not support FlashAttention-2.")
-
+    # if model_args.flash_attn:
+    #     if getattr(config, "model_type", None) == "llama":
+    #         if is_flash_attn2_available():
+    #             LlamaModule.LlamaAttention = LlamaPatches.LlamaFlashAttention2
+    #             LlamaModule.LlamaModel._prepare_decoder_attention_mask = LlamaPatches._prepare_decoder_attention_mask
+    #             logger.info("Using FlashAttention-2 for faster training and inference.")
+    #         else:
+    #             logger.warning("FlashAttention-2 is not installed.")
+    #     elif getattr(config, "model_type", None) in ["qwen", "Yi"]:
+    #         logger.info("当前模型原生支持 FlashAttention，无需额外设置。")
+    #     else:
+    #         logger.warning("当前模型尚不支持 FlashAttention！")
+    
     elif is_trainable and model_args.shift_attn and getattr(config, "model_type", None) == "llama":
         LlamaModule.LlamaAttention = LlamaPatches.LlamaShiftShortAttention
         logger.warning("Using `--flash_attn` for faster training in large context length.")
@@ -270,29 +280,38 @@ def load_model_and_tokenizer(
         else:
             logger.warning("Current model does not support shift short attention.")
 
+    # TODO(@zyw): 采用 GPTQ 或 AWQ 后端配置量化
+    # if getattr(config, "quantization_config", None):
+    #     if model_args.quantization_bit is not None: # remove bnb quantization
+    #         model_args.quantization_bit = None
+    #     config_kwargs["device_map"] = {"": get_current_device()}
+    #     quantization_config = getattr(config, "quantization_config", None)
+    #     logger.info("Loading {}-bit quantized model.".format(quantization_config.get("bits", -1)))
+
     # TODO(@zyw): 采用 bitsandbytes 后端来配置量化方法
-    if model_args.quantization_bit is not None:
-        if is_deepspeed_zero3_enabled():
-            raise ValueError("DeepSpeed ZeRO-3 与量化当前无法互相兼容！")
+    # if model_args.quantization_bit is not None:
+    #     if is_deepspeed_zero3_enabled():
+    #         raise ValueError("DeepSpeed ZeRO-3 与量化当前无法互相兼容！")
 
-        if model_args.quantization_bit == 8: 
-            require_version("bitsandbytes>=0.37.0", "To fix: pip install bitsandbytes>=0.37.0")
-            config_kwargs["load_in_8bit"] = True
-            config_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    #     if model_args.quantization_bit == 8: 
+    #         require_version("bitsandbytes>=0.37.0", "To fix: pip install bitsandbytes>=0.37.0")
+    #         # config_kwargs["load_in_8bit"] = True
+    #         config_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
 
-        elif model_args.quantization_bit == 4: 
-            require_version("bitsandbytes>=0.39.0", "To fix: pip install bitsandbytes>=0.39.0")
-            config_kwargs["load_in_4bit"] = True
-            config_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=model_args.compute_dtype,
-                bnb_4bit_use_double_quant=model_args.double_quantization,
-                bnb_4bit_quant_type=model_args.quantization_type
-            )
+    #     if model_args.quantization_bit == 4: 
+    #         require_version("bitsandbytes>=0.39.0", "To fix: pip install bitsandbytes>=0.39.0")
+    #         # config_kwargs["load_in_4bit"] = True
+    #         config_kwargs["quantization_config"] = BitsAndBytesConfig(
+    #             load_in_4bit=True,
+    #             bnb_4bit_compute_dtype=model_args.compute_dtype,
+    #             bnb_4bit_use_double_quant=model_args.double_quantization,
+    #             bnb_4bit_quant_type=model_args.quantization_type
+    #         )
 
-        is_mergeable = False
-        config_kwargs["device_map"] = {"": int(os.environ.get("LOCAL_RANK", "0"))} if is_trainable else "auto"
-        logger.info("Quantizing model to {} bit.".format(model_args.quantization_bit))
+    #     # is_mergeable = False
+    #     # config_kwargs["device_map"] = {"": int(os.environ.get("LOCAL_RANK", "0"))} if is_trainable else "auto"
+    #     config_kwargs["device_map"] = {"": get_current_device()}
+    #     logger.info("Quantizing model to {} bit.".format(model_args.quantization_bit))
 
     # 加载预训练模型权重 (without valuehead).
     model = AutoModelForCausalLM.from_pretrained(
@@ -303,7 +322,6 @@ def load_model_and_tokenizer(
         **config_kwargs
     )
 
-    is_mergeable = True
     # 替换 Qwen 和 Baichuan2 模型中自定义的 generate 接口
     if isinstance(model, PreTrainedModel) and "GenerationMixin" not in str(model.generate.__func__):
         model.generate = MethodType(PreTrainedModel.generate, model)
@@ -311,6 +329,7 @@ def load_model_and_tokenizer(
     # 为 ChatGLM2 模型修复 lm_head 属性
     if getattr(config, "model_type", None) == "chatglm":
         setattr(model, "lm_head", model.transformer.output_layer)
+        setattr(model, "_keys_to_ignore_on_save", ["lm_head.weight"])
 
     # Register auto class to save the custom code files.
     if isinstance(config, PretrainedConfig) and "AutoConfig" in getattr(config, "auto_map", {}):
@@ -325,20 +344,31 @@ def load_model_and_tokenizer(
     # (2) make output embedding layer require grads
     # (3) upcast the lm_head to fp32
     model = prepare_model_for_training(model=model, finetuning_args=finetuning_args) if is_trainable else model
-    # model = prepare_model_for_training(
-    #     model=model, 
-    #     finetuning_args=finetuning_args, 
-    #     use_gradient_checkpointing=False) if is_trainable else model
     # TODO(@zyw): 初始化 adapter 模型
-    model = init_adapter(model, model_args, finetuning_args, is_trainable, is_mergeable)
-    # 设置 train / eval 模式
-    model = model.train() if is_trainable else model.eval()
+    # model = init_adapter(model, model_args, finetuning_args, is_trainable, is_mergeable)
+    # # 设置 train / eval 模式
+    # model = model.train() if is_trainable else model.eval()
+    model = init_adapter(model, model_args, finetuning_args, is_trainable)
 
     # TODO(@zyw): RLHF 训练阶段：为模型添加 valuehead
+    # TODO 优化加载流程 ==============================================================
+    # if add_valuehead:
+    #     model: "AutoModelForCausalLMWithValueHead" = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+    #     ignore_modules = [name for name, _ in model.named_parameters() if "pretrained_model" in name]
+    #     setattr(model, "_keys_to_ignore_on_save", ignore_modules)
+    #     setattr(model, "tie_weights", MethodType(lambda _: None, model)) # use empty method
+    #     vhead_path = (
+    #         model_args.checkpoint_dir[-1] if model_args.checkpoint_dir is not None else model_args.model_name_or_path
+    #     )
+    #     vhead_params = load_valuehead_params(vhead_path, model_args)
+    #     if vhead_params is not None:
+    #         model.load_state_dict(vhead_params, strict=False)
+    #         logger.info("Loaded valuehead from checkpoint: {}".format(vhead_path))
+    # TODO =====================================================================
     if stage == "rm" or stage == "ppo":
         model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
         model._keys_to_ignore_on_save = None
-        if stage == "rm" and model_args.checkpoint_dir is not None:    # 加载 valuehead 权重来对 reward model 进行性能评估
+        if stage == "rm" and model_args.checkpoint_dir is not None: # 加载 valuehead 权重来对 reward model 进行性能评估
             logger.warning("Only the last checkpoint containing valuehead will be loaded.")
             if load_valuehead_params(model, model_args.checkpoint_dir[-1]):
                 model.v_head.load_state_dict({
@@ -354,8 +384,11 @@ def load_model_and_tokenizer(
 
     # 模型推理
     if not is_trainable:
-        model.requires_grad_(False)    # 固化模型中的全部参数
+        model.requires_grad_(False) # fix all model params
         model = model.to(model_args.compute_dtype) if model_args.quantization_bit is None else model
+        model.eval()
+    else: 
+        model.train()
 
     # 获取可训练参数的数量
     trainable_params, all_param = count_parameters(model)
