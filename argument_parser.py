@@ -11,29 +11,42 @@ from loguru import logger
 
 from hparams import (
     DataArguments, 
+    EvaluationArguments, 
     FinetuningArguments, 
     GeneratingArguments, 
-    ModelArguments,
-    data_args,
-    finetuning_args,
-    model_args, 
+    ModelArguments, 
 )
 
 
-ARGUMENTS_FOR_TRAINING = Tuple[
+_TRAIN_ARGS = [
     ModelArguments, DataArguments, Seq2SeqTrainingArguments, FinetuningArguments, GeneratingArguments
 ]
-
-ARGUMENTS_FOR_INFERENCE = Tuple[
+_TRAIN_CLS = Tuple[
+    ModelArguments, DataArguments, Seq2SeqTrainingArguments, FinetuningArguments, GeneratingArguments
+]
+_INFER_ARGS = [
     ModelArguments, DataArguments, FinetuningArguments, GeneratingArguments
 ]
-
-ARGUMENTS_FOR_EVALUATION = Tuple[
+_INFER_CLS = Tuple[
     ModelArguments, DataArguments, FinetuningArguments, GeneratingArguments
+]
+_EVAL_ARGS = [
+    ModelArguments, DataArguments, EvaluationArguments, FinetuningArguments
+]
+_EVAL_CLS = Tuple[
+    ModelArguments, DataArguments, EvaluationArguments, FinetuningArguments
 ]
 
 
-def parse_train_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_TRAINING: 
+def parse_train_args(
+        args: Optional[Dict[str, Any]] = None, 
+) -> Tuple[
+    ModelArguments,
+    DataArguments,
+    Seq2SeqTrainingArguments,
+    FinetuningArguments,
+    GeneratingArguments
+]: 
     
     # 创建参数解析器
     parser = HfArgumentParser((
@@ -61,6 +74,27 @@ def parse_train_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_TRA
         return parser.parse_args_into_dataclasses()
 
 
+def parse_args(parser: "HfArgumentParser", args: Optional[Dict[str, Any]] = None) -> Tuple[Any]:
+    if args is not None:
+        return parser.parse_dict(args)
+    elif len(sys.argv) == 2 and sys.argv[1].endswith(".yaml"):
+        return parser.parse_yaml_file(os.path.abspath(sys.argv[1]))
+    elif len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        return parser.parse_json_file(os.path.abspath(sys.argv[1]))
+    else:
+        return parser.parse_args_into_dataclasses()
+
+
+def parse_infer_args(args: Optional[Dict[str, Any]] = None) -> _INFER_CLS:
+    parser = HfArgumentParser(_INFER_ARGS)
+    return parse_args(parser, args)
+
+
+def parse_eval_args(args: Optional[Dict[str, Any]] = None) -> _EVAL_CLS:
+    parser = HfArgumentParser(_EVAL_ARGS)
+    return parse_args(parser, args)
+
+
 def get_train_args(
         args: Optional[Dict[str, Any]] = None, 
 ) -> Tuple[
@@ -85,7 +119,7 @@ def get_train_args(
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-    # 获取训练数据集的相关信息
+    # Check arguments
     data_args.init_for_training(training_args.seed)
 
     if finetuning_args.stage != "pt" and data_args.template is None:
@@ -200,51 +234,35 @@ def get_train_args(
     return model_args, data_args, training_args, finetuning_args, generating_args
 
 
-# TODO(@zyw)
-def _verify_model_args(model_args: "ModelArguments", finetuning_args: "FinetuningArguments") -> None: 
-    if model_args.quantization_bit is not None and finetuning_args.finetuning_type != "lora": 
-        raise ValueError("当前仅支持在 LoRA 训练时采用量化！")
-    
+def _verify_model_args(model_args: "ModelArguments", finetuning_args: "FinetuningArguments") -> None:
+    if model_args.quantization_bit is not None and finetuning_args.finetuning_type != "lora":
+        raise ValueError("Quantization is only compatible with the LoRA method.")
+
     if (
         model_args.checkpoint_dir is not None
         and len(model_args.checkpoint_dir) != 1
         and finetuning_args.finetuning_type != "lora"
-    ): 
-        raise ValueError("当前仅支持在 LoRA 训练时添加多个权重文件！")
+    ):
+        raise ValueError("Multiple checkpoints are only available for LoRA tuning.")
 
 
-def parse_infer_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_INFERENCE: 
-
-    # 创建参数解析器
-    parser = HfArgumentParser(
-
-    )
-    raise NotImplementedError
-
-
-def parse_eval_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_EVALUATION: 
-    raise NotImplementedError
-
-
-def get_infer_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_INFERENCE: 
-
+def get_infer_args(args: Optional[Dict[str, Any]] = None) -> _INFER_CLS:
     model_args, data_args, finetuning_args, generating_args = parse_infer_args(args)
 
-    if data_args.template is None: 
-        raise ValueError("template 参数不能为空！")
-    
+    if data_args.template is None:
+        raise ValueError("Please specify which `template` to use.")
+
     _verify_model_args(model_args, finetuning_args)
 
     return model_args, data_args, finetuning_args, generating_args
 
 
-def get_eval_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_EVALUATION: 
-
+def get_eval_args(args: Optional[Dict[str, Any]] = None) -> _EVAL_CLS:
     model_args, data_args, eval_args, finetuning_args = parse_eval_args(args)
 
-    if data_args.template is None: 
-        raise ValueError("template 参数不能为空！")
-    
+    if data_args.template is None:
+        raise ValueError("Please specify which `template` to use.")
+
     _verify_model_args(model_args, finetuning_args)
 
     transformers.set_seed(eval_args.seed)
