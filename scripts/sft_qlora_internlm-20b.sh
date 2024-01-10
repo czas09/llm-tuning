@@ -1,14 +1,14 @@
-MODLE_DIR=/workspace/models/chatglm3-6b-base-20231026/
-OUTPUT_DIR=./temp/chatglm3-6b-base
+MODLE_DIR=/workspace/models/internlm-chat-20b-20230920
+OUTPUT_DIR=./temp1/internlm_qlora
 
-CUDA_VISIBLE_DEVICES=0 python train.py \
+CUDA_VISIBLE_DEVICES=3 python train.py \
     --stage sft \
     --model_name_or_path $MODLE_DIR \
     --do_train \
-    --dataset alpaca_zh,lima \
+    --dataset alpaca_zh \
     --template default \
     --finetuning_type lora \
-    --lora_target query_key_value \
+    --lora_target o_proj \
     --quantization_bit 4 \
     --output_dir $OUTPUT_DIR \
     --overwrite_cache \

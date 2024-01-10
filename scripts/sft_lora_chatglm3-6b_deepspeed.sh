@@ -1,7 +1,7 @@
-MODLE_DIR=/workspace/models/chatglm3-6b-base-20231026/
+MODLE_DIR=/workspace/models/chatglm3-6b-base-20231026
 OUTPUT_DIR=./temp/chatglm3-6b-base
 
-CUDA_VISIBLE_DEVICES=0 python train.py \
+accelerate launch train.py \
     --stage sft \
     --model_name_or_path $MODLE_DIR \
     --do_train \
@@ -9,7 +9,6 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --template default \
     --finetuning_type lora \
     --lora_target query_key_value \
-    --quantization_bit 4 \
     --output_dir $OUTPUT_DIR \
     --overwrite_cache \
     --per_device_train_batch_size 4 \
@@ -18,6 +17,6 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --logging_steps 10 \
     --save_steps 1000 \
     --learning_rate 5e-5 \
-    --num_train_epochs 3.0 \
+    --num_train_epochs 9.0 \
     --plot_loss \
     --fp16

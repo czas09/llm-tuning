@@ -1,11 +1,12 @@
 MODLE_DIR=/workspace/models/baichuan2-13b-chat-20230906
-OUTPUT_DIR=./temp
+OUTPUT_DIR=./temp/baichuan_qlora
 
 CUDA_VISIBLE_DEVICES=1 python train.py \
     --stage sft \
     --model_name_or_path $MODLE_DIR \
     --do_train \
-    --dataset alpaca_zh \
+    --resume_lora_training \
+    --dataset alpaca_zh,lima \
     --template default \
     --finetuning_type lora \
     --lora_target W_pack,o_proj \
@@ -18,6 +19,6 @@ CUDA_VISIBLE_DEVICES=1 python train.py \
     --logging_steps 10 \
     --save_steps 1000 \
     --learning_rate 5e-5 \
-    --num_train_epochs 3.0 \
+    --num_train_epochs 12.0 \
     --plot_loss \
     --fp16

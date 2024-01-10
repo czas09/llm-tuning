@@ -1,19 +1,18 @@
-MODLE_DIR=/workspace/models/chatglm3-6b-base-20231026/
-OUTPUT_DIR=./temp/chatglm3-6b-base
+MODLE_DIR=/workspace/models/internlm-chat-20b-20230920
+OUTPUT_DIR=./temp1/internlm_deepspeed
 
-CUDA_VISIBLE_DEVICES=0 python train.py \
+NCCL_P2P_DISABLE=1 accelerate launch --config_file scripts/accelerate_config.yaml train.py \
     --stage sft \
     --model_name_or_path $MODLE_DIR \
     --do_train \
-    --dataset alpaca_zh,lima \
+    --dataset alpaca_zh \
     --template default \
     --finetuning_type lora \
-    --lora_target query_key_value \
-    --quantization_bit 4 \
+    --lora_target W_pack,o_proj \
     --output_dir $OUTPUT_DIR \
     --overwrite_cache \
     --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 1 \
     --lr_scheduler_type cosine \
     --logging_steps 10 \
     --save_steps 1000 \
