@@ -6,53 +6,50 @@ import os
 import torch
 from transformers.trainer import WEIGHTS_NAME
 from loguru import logger
+from transformers.utils import (
+    is_torch_bf16_gpu_available, 
+    is_torch_cuda_available, 
+    is_torch_npu_available, 
+)
 
-
-from utils.constants import LAYERNORM_NAMES
-
-from transformers.modeling_utils import PreTrainedModel
-from hparams import FinetuningArguments
-
+_is_fp16_available = is_torch_cuda_available() or is_torch_npu_available()
 try: 
-    from transformers.utils import (
-        is_torch_bf16_cpu_available, 
-        is_torch_bf16_gpu_available, 
-        is_torch_cuda_available, 
-        is_torch_npu_available, 
-    )
-    _is_fp16_available = is_torch_npu_available() or is_torch_cuda_available()
-    _is_bf16_available = is_torch_bf16_gpu_available() or is_torch_bf16_cpu_available()
+    _is_bf16_available = is_torch_bf16_gpu_available()
+except: 
+    _is_bf16_available = False
 
-except ImportError: 
-    _is_fp16_available = torch.cuda.is_available()
-    _is_bf16_available = torch.cuda.is_bf16_supported()
+from constants import LAYERNORM_NAMES
+
+if TYPE_CHECKING:
+    from transformers.modeling_utils import PreTrainedModel
+    from hparams import FinetuningArguments
 
 
 def find_all_linear_modules(
-    model: PreTrainedModel, 
-    quantization_bit: Optional[int] = None, 
-    output_layer_name: Optional[str] = "lm_head",    # 最后一层输出层，GPT 类模型中一般是 lm_head
-) -> List[str]: 
-    """找到当前模型中的线性 Linear 层
-    
-    用于需要对模型中所有的线性层训练 LoRA 权重的情况
-    """
-
+    model: "PreTrainedModel",
+    quantization_bit: Optional[int] = None
+) -> List[str]:
     if quantization_bit is not None:    # QLoRA（NF4）或 8 位量化 LoRA
         import bitsandbytes as bnb
         linear_cls = bnb.nn.Linear4bit if quantization_bit == 4 else bnb.nn.Linear8bitLt
     else:                               # LoRA
         linear_cls = torch.nn.Linear
 
+    output_layer_names = ["lm_head"]
+    if model.config.model_type == "chatglm":
+        output_layer_names.append("output_layer")
+
     module_names = set()
     for name, module in model.named_modules():
-        if output_layer_name not in name and isinstance(module, linear_cls):
+        if (
+            isinstance(module, linear_cls)
+            and not any([output_layer in name for output_layer in output_layer_names])
+        ):
             module_names.add(name.split(".")[-1])
 
-    if output_layer_name in module_names:
-        module_names.pop(output_layer_name)
-
+    logger.info("Found linear modules: {}".format(",".join(module_names)))
     return list(module_names)
+
 
 
 def prepare_model_for_training(
@@ -79,42 +76,41 @@ def prepare_model_for_training(
         logger.info("Upcasting weights in layernorm in float32.")
 
     if finetuning_args.neft_alpha > 1e-6:
-        input_embed = model.get_input_embeddings()
-        if isinstance(input_embed, torch.nn.Embedding):
-            def noisy_forward(self: torch.nn.Embedding, x: torch.Tensor) -> torch.Tensor:
-                embeddings = input_embed.__class__.forward(self, x)
-                if self.training:
-                    dims = self.num_embeddings * self.embedding_dim
-                    mag_norm = finetuning_args.neft_alpha / (dims ** 0.5)
-                    embeddings += torch.zeros_like(embeddings).uniform_(-mag_norm, mag_norm)
-                return embeddings
+        def neftune_forward_hook(module: torch.nn.Module, args: Tuple[torch.Tensor], output: torch.Tensor):
+            if module.training:
+                dims = torch.tensor(output.size(1) * output.size(2))
+                mag_norm = finetuning_args.neft_alpha / torch.sqrt(dims)
+                output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
+            return output
 
-            input_embed.forward = MethodType(noisy_forward, input_embed)
-            logger.info("Using noisy embedding with alpha={:.2f}".format(finetuning_args.neft_alpha))
-        else:
-            logger.warning("Input embeddings are not normal nn.Embedding, cannot transform into noisy embedding.")
+        model.get_input_embeddings().register_forward_hook(neftune_forward_hook)
+        logger.info("Using noisy embedding with alpha={:.2f}".format(finetuning_args.neft_alpha))
+
 
     if use_gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         else:
-            def make_inputs_require_grad(module: torch.nn.Module, input: torch.Tensor, output: torch.Tensor):
+            def make_inputs_require_grad(module: torch.nn.Module, args: Tuple[torch.Tensor], output: torch.Tensor):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
         model.gradient_checkpointing_enable()
         model.config.use_cache = False # turn off when gradient checkpointing is enabled
-        logger.info("启用梯度检查点（gradient checkpointing）技术。")
+        logger.info("Gradient checkpointing enabled.")
 
     if finetuning_args.finetuning_type != "full" and hasattr(model, output_layer_name):
         output_layer = getattr(model, output_layer_name)
         if isinstance(output_layer, torch.nn.Linear):
-            def forward_in_fp32(self, x: torch.Tensor) -> torch.Tensor:
-                return output_layer.__class__.forward(self, x.to(output_layer.weight.dtype)).to(torch.float32)
-
-            output_layer.forward = MethodType(forward_in_fp32, output_layer)
+            def fp32_forward_pre_hook(module: torch.nn.Module, args: Tuple[torch.Tensor]):
+                return args[0].to(output_layer.weight.dtype)
+            def fp32_forward_post_hook(module: torch.nn.Module, args: Tuple[torch.Tensor], output: torch.Tensor):
+                return output.to(torch.float32)
+            output_layer.register_forward_pre_hook(fp32_forward_pre_hook)
+            output_layer.register_forward_hook(fp32_forward_post_hook)
 
     return model
+
 
 
 def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
@@ -137,6 +133,20 @@ def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
             trainable_params += num_params
 
     return trainable_params, all_param
+
+
+def get_current_device() -> torch.device:
+    import accelerate
+    if accelerate.utils.is_xpu_available():
+        device = "xpu:{}".format(os.environ.get("LOCAL_RANK", "0"))
+    elif accelerate.utils.is_npu_available():
+        device = "npu:{}".format(os.environ.get("LOCAL_RANK", "0"))
+    elif torch.cuda.is_available():
+        device = "cuda:{}".format(os.environ.get("LOCAL_RANK", "0"))
+    else:
+        device = "cpu"
+
+    return torch.device(device)
 
 
 def infer_optim_dtype(model_dtype: torch.dtype) -> torch.dtype:
@@ -162,3 +172,28 @@ def load_valuehead_params(model: torch.nn.Module, checkpoint_dir: os.PathLike) -
     model.register_buffer("default_head_weight", torch.zeros_like(vhead_params["v_head.summary.weight"]), persistent=False)
     model.register_buffer("default_head_bias", torch.zeros_like(vhead_params["v_head.summary.bias"]), persistent=False)
     return True
+
+
+def dispatch_model(model: "PreTrainedModel") -> "PreTrainedModel":
+    r"""
+    Dispatches a pre-trained model to GPUs with balanced memory.
+    Borrowed from: https://github.com/huggingface/transformers/blob/v4.31.0/src/transformers/modeling_utils.py#L2803
+    """
+    if getattr(model, "quantization_method", None): # already set on current device
+        return model
+
+    if torch.cuda.device_count() > 1 and getattr(model.config, "model_type", None) != "chatglm":
+        from accelerate import dispatch_model
+        from accelerate.utils import infer_auto_device_map, get_balanced_memory
+
+        if model._no_split_modules is None:
+            raise ValueError("The model class needs to implement the `_no_split_modules` attribute.")
+
+        kwargs = {"dtype": model.dtype, "no_split_module_classes": model._no_split_modules}
+        max_memory = get_balanced_memory(model, **kwargs)
+        # Make sure tied weights are tied before creating the device map.
+        model.tie_weights()
+        device_map = infer_auto_device_map(model, max_memory=max_memory, **kwargs)
+        return dispatch_model(model, device_map)
+    else:
+        return model.cuda()
