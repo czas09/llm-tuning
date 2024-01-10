@@ -13,19 +13,27 @@ from hparams import (
     DataArguments, 
     FinetuningArguments, 
     GeneratingArguments, 
-    ModelArguments, 
+    ModelArguments,
+    data_args,
+    finetuning_args,
+    model_args, 
 )
 
 
-def parse_train_args(
-        args: Optional[Dict[str, Any]] = None, 
-) -> Tuple[
-    ModelArguments,
-    DataArguments,
-    Seq2SeqTrainingArguments,
-    FinetuningArguments,
-    GeneratingArguments
-]: 
+ARGUMENTS_FOR_TRAINING = Tuple[
+    ModelArguments, DataArguments, Seq2SeqTrainingArguments, FinetuningArguments, GeneratingArguments
+]
+
+ARGUMENTS_FOR_INFERENCE = Tuple[
+    ModelArguments, DataArguments, FinetuningArguments, GeneratingArguments
+]
+
+ARGUMENTS_FOR_EVALUATION = Tuple[
+    ModelArguments, DataArguments, FinetuningArguments, GeneratingArguments
+]
+
+
+def parse_train_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_TRAINING: 
     
     # 创建参数解析器
     parser = HfArgumentParser((
@@ -77,7 +85,7 @@ def get_train_args(
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-    # Check arguments
+    # 获取训练数据集的相关信息
     data_args.init_for_training(training_args.seed)
 
     if finetuning_args.stage != "pt" and data_args.template is None:
@@ -190,3 +198,55 @@ def get_train_args(
     transformers.set_seed(training_args.seed)
 
     return model_args, data_args, training_args, finetuning_args, generating_args
+
+
+# TODO(@zyw)
+def _verify_model_args(model_args: "ModelArguments", finetuning_args: "FinetuningArguments") -> None: 
+    if model_args.quantization_bit is not None and finetuning_args.finetuning_type != "lora": 
+        raise ValueError("当前仅支持在 LoRA 训练时采用量化！")
+    
+    if (
+        model_args.checkpoint_dir is not None
+        and len(model_args.checkpoint_dir) != 1
+        and finetuning_args.finetuning_type != "lora"
+    ): 
+        raise ValueError("当前仅支持在 LoRA 训练时添加多个权重文件！")
+
+
+def parse_infer_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_INFERENCE: 
+
+    # 创建参数解析器
+    parser = HfArgumentParser(
+
+    )
+    raise NotImplementedError
+
+
+def parse_eval_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_EVALUATION: 
+    raise NotImplementedError
+
+
+def get_infer_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_INFERENCE: 
+
+    model_args, data_args, finetuning_args, generating_args = parse_infer_args(args)
+
+    if data_args.template is None: 
+        raise ValueError("template 参数不能为空！")
+    
+    _verify_model_args(model_args, finetuning_args)
+
+    return model_args, data_args, finetuning_args, generating_args
+
+
+def get_eval_args(args: Optional[Dict[str, Any]] = None) -> ARGUMENTS_FOR_EVALUATION: 
+
+    model_args, data_args, eval_args, finetuning_args = parse_eval_args(args)
+
+    if data_args.template is None: 
+        raise ValueError("template 参数不能为空！")
+    
+    _verify_model_args(model_args, finetuning_args)
+
+    transformers.set_seed(eval_args.seed)
+
+    return model_args, data_args, eval_args, finetuning_args

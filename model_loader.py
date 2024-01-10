@@ -325,6 +325,10 @@ def load_model_and_tokenizer(
     # (2) make output embedding layer require grads
     # (3) upcast the lm_head to fp32
     model = prepare_model_for_training(model=model, finetuning_args=finetuning_args) if is_trainable else model
+    # model = prepare_model_for_training(
+    #     model=model, 
+    #     finetuning_args=finetuning_args, 
+    #     use_gradient_checkpointing=False) if is_trainable else model
     # TODO(@zyw): 初始化 adapter 模型
     model = init_adapter(model, model_args, finetuning_args, is_trainable, is_mergeable)
     # 设置 train / eval 模式
@@ -334,7 +338,7 @@ def load_model_and_tokenizer(
     if stage == "rm" or stage == "ppo":
         model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
         model._keys_to_ignore_on_save = None
-        if stage == "rm" and model_args.checkpoint_dir is not None: # 加载 valuehead 权重来对 reward model 进行性能评估
+        if stage == "rm" and model_args.checkpoint_dir is not None:    # 加载 valuehead 权重来对 reward model 进行性能评估
             logger.warning("Only the last checkpoint containing valuehead will be loaded.")
             if load_valuehead_params(model, model_args.checkpoint_dir[-1]):
                 model.v_head.load_state_dict({
@@ -350,7 +354,7 @@ def load_model_and_tokenizer(
 
     # 模型推理
     if not is_trainable:
-        model.requires_grad_(False) # fix all model params
+        model.requires_grad_(False)    # 固化模型中的全部参数
         model = model.to(model_args.compute_dtype) if model_args.quantization_bit is None else model
 
     # 获取可训练参数的数量

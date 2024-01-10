@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class DatasetAttr:
+class DatasetAttr: 
+    """数据集的基础信息"""
 
     load_from: str
     dataset_name: Optional[str] = None
@@ -113,26 +114,36 @@ class DataArguments:
         if self.streaming and self.cache_path:
             raise ValueError("`cache_path` is incompatible with `streaming`.")
 
-    def init_for_training(self, seed: int): # support mixing multiple datasets
+    def init_for_training(self, seed: int): 
+        """用于训练的数据相关参数的初始化流程
+        
+        支持混合多种数据集
+        """
+
         self.seed = seed
+        # 获取数据集名称
         dataset_names = [ds.strip() for ds in self.dataset.split(",")] if self.dataset is not None else []
+        
         try:
             with open(os.path.join(self.dataset_dir, "dataset_info.json"), "r") as f:
                 dataset_info = json.load(f)
         except Exception:
             if self.dataset is not None:
-                raise ValueError("Cannot find dataset_info.json in `dataset_dir`.")
+                raise ValueError("`dataset_dir` 路径下无法找到数据集信息文件 dataset_info.json。")
             dataset_info = None
 
         prompt_list = self.system_prompt.split("|") if self.system_prompt else [None]
         prompt_list = prompt_list * (len(dataset_names) // len(prompt_list))
         assert len(prompt_list) == len(dataset_names), "Number of system prompts should be equal to datasets or 1."
 
+        # 在数据集中的采样比例
         if self.interleave_probs is not None:
             self.interleave_probs = [float(prob.strip()) for prob in self.interleave_probs.split(",")]
 
+        # 获取数据集相关信息
         self.dataset_list: List[DatasetAttr] = []
-        for i, name in enumerate(dataset_names):
+        for i, name in enumerate(dataset_names): 
+            # 用于训练的数据集需要先在数据集信息文件 dataset_info.json 中注册
             if name not in dataset_info:
                 raise ValueError("Undefined dataset {} in dataset_info.json.".format(name))
 

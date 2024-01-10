@@ -218,6 +218,8 @@ def prep_dataset(
         print("input_ids:\n{}".format(example["input_ids"]))
         print("inputs:\n{}".format(tokenizer.decode(example["input_ids"], skip_special_tokens=False)))
 
+    # preprocess_func 数据集预处理函数
+    # print_function 数据集示例打印函数
     if stage == "pt":
         preprocess_func = preprocess_pretrain_dataset
         print_function = print_unsupervised_dataset_example

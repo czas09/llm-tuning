@@ -562,15 +562,21 @@ register_template(
     prefix=[
         {"token": "[gMASK]"},
         {"token": "sop"},
+        {"token": "<|system|>"}, 
+        "\n"
         "{{system}}"
     ],
     prompt=[
         {"token": "<|user|>"},
         "\n",
         "{{query}}",
-        {"token": "<|assistant|>"}
+        {"token": "<|assistant|>"}, 
+        "\n"    # 添加一个新行，避免在 process_response 方法中报错
     ],
-    system="",
+    system=(
+        "You are ChatGLM3, a large language model trained bu Zhipu.AI. "
+        "Follow the user's instructions carefully. Respond using markdown."
+    ),
     sep=[],
     stop_words=[
         "<|user|>",
@@ -578,6 +584,8 @@ register_template(
     ],
     efficient_eos=True
 )
+
+# TODO chatglm3 raw template for tool tuning
 
 
 r"""
@@ -612,6 +620,21 @@ register_template(
     ],
     prompt=[
         "Human: {{query}}\n\nAssistant: "
+    ],
+    system="",
+    sep=[]
+)
+
+
+register_template(
+    name="bluelm",
+    prefix=[
+        "{{system}}"
+    ],
+    prompt=[
+        {"token": "[|Human|]:"}, 
+        "{{query}}", 
+        {"token": "[|AI|]:"}
     ],
     system="",
     sep=[]
