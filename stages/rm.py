@@ -155,7 +155,7 @@ def compute_accuracy(eval_preds: Sequence[Union[np.ndarray, Tuple[np.ndarray]]])
     )
 
 
-def run_rm(
+def train_rm(
     model_args: ModelArguments,
     data_args: DataArguments,
     training_args: Seq2SeqTrainingArguments,

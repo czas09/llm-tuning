@@ -1,16 +1,14 @@
-import torch
-from types import MethodType
-from typing import TYPE_CHECKING, List, Optional, Tuple
-
 import os
+from typing import List, Optional, Tuple
+
 import torch
 from transformers.trainer import WEIGHTS_NAME
-from loguru import logger
 from transformers.utils import (
     is_torch_bf16_gpu_available, 
     is_torch_cuda_available, 
     is_torch_npu_available, 
 )
+from loguru import logger
 
 _is_fp16_available = is_torch_cuda_available() or is_torch_npu_available()
 try: 
@@ -18,11 +16,10 @@ try:
 except: 
     _is_bf16_available = False
 
-from constants import LAYERNORM_NAMES
+from utils.constants import LAYERNORM_NAMES
 
-if TYPE_CHECKING:
-    from transformers.modeling_utils import PreTrainedModel
-    from hparams import FinetuningArguments
+from transformers.modeling_utils import PreTrainedModel
+from hparams import FinetuningArguments
 
 
 def find_all_linear_modules(

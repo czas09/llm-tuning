@@ -12,11 +12,17 @@ class DatasetAttr:
     dataset_name: Optional[str] = None
     dataset_sha1: Optional[str] = None
     system_prompt: Optional[str] = None
+    subset: Optional[str] = None
     ranking: Optional[bool] = False
+    formatting: Optional[Literal["alpaca", "sharegpt"]] = "alpaca"
+
     prompt: Optional[str] = "instruction"
     query: Optional[str] = "input"
     response: Optional[str] = "output"
     history: Optional[str] = None
+    messages: Optional[str] = "conversations"
+    role: Optional[str] = "from"
+    content: Optional[str] = "value"
 
     def __repr__(self) -> str:
         return self.dataset_name
@@ -46,6 +52,10 @@ class DataArguments:
     cutoff_len: Optional[int] = field(
         default=1024,
         metadata={"help": "The maximum length of the model inputs after tokenization."}
+    )
+    reserved_label_len: Optional[int] = field(
+        default=1, 
+        metadata={"help": "Tokenization 后为标签 label 保留的最大长度"}
     )
     train_on_prompt: Optional[bool] = field(
         default=False,

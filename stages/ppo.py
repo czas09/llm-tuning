@@ -516,7 +516,7 @@ def create_reward_model(
 
 
 
-def run_ppo(
+def train_ppo(
     model_args: ModelArguments, 
     data_args: DataArguments, 
     training_args: Seq2SeqTrainingArguments, 

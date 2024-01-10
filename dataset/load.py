@@ -53,13 +53,13 @@ def load_dataset(
         else:
             raise NotImplementedError
 
-        dataset = load_dataset(
+        dataset = datasets.load_dataset(
             path=data_path,
             name=data_name,
             data_files=data_files,
             split=data_args.split,
             cache_dir=model_args.cache_dir,
-            token=model_args.hf_hub_token,
+            # token=model_args.hf_hub_token,    # TODO(@zyw)
             streaming=(data_args.streaming and (dataset_attr.load_from != "file"))
         )
 

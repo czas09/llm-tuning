@@ -1,5 +1,5 @@
 MODLE_DIR=/workspace/models/baichuan2-13b-chat-20230906
-OUTPUT_DIR=./temp1/baichuan2_1
+OUTPUT_DIR=./temp1/baichuan2_2
 
 CUDA_VISIBLE_DEVICES=1 python train.py \
     --stage sft \
