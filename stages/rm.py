@@ -77,7 +77,8 @@ class TrainerForRewardModel(Trainer):
 
         # 计算奖励值
         _, _, values = model(**inputs, output_hidden_states=True, return_dict=True)
-        if values.size(0) != inputs["input_ids"].size(0):    # adapt to chatglm2
+        unwrapped_model: "PreTrainedModel" = self.accelerator.unwrap_model(self.model)
+        if getattr(unwrapped_model.config, "model_type", None) == "chatglm":
             values = torch.transpose(values, 0, 1)
 
         # 将 input ids 和计算得到的奖励值划分为 chosen 和 rejected 两部分
@@ -154,7 +155,7 @@ def compute_accuracy(eval_preds: Sequence[Union[np.ndarray, Tuple[np.ndarray]]])
     )
 
 
-def train_rm(
+def run_rm(
     model_args: ModelArguments,
     data_args: DataArguments,
     training_args: Seq2SeqTrainingArguments,
@@ -170,7 +171,7 @@ def train_rm(
     # 预处理数据集
     dataset = prep_dataset(dataset, tokenizer, data_args, training_args, stage="rm")
     # 创建 data collator
-    data_collator = DataCollatorForPairwiseData(tokenizer, pad_to_multiple_of=4)
+    data_collator = DataCollatorForPairwiseData(tokenizer, pad_to_multiple_of=8)
 
     # 配置训练参数
     training_args_dict = training_args.to_dict()
@@ -190,7 +191,7 @@ def train_rm(
 
     # 模型训练
     if training_args.do_train:
-        train_result = trainer.train()
+        train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_state()
