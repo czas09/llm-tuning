@@ -3,13 +3,19 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 from transformers.utils import logging
-from transformers.models.llama.modeling_llama import LlamaAttention, apply_rotary_pos_emb, repeat_kv
+from transformers.models.llama.modeling_llama import LlamaAttention, apply_rotary_pos_emb
 
 try:
+    from transformers.models.llama.modeling_llama import repeat_kv
+except ImportError:
+    print("Please upgrade `transformers`.")
+
+from utils.packages import is_flash_attn2_available
+
+
+if is_flash_attn2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func # type: ignore
     from flash_attn.bert_padding import pad_input, unpad_input # type: ignore
-except ImportError:
-    print("FlashAttention-2 is not installed, ignore this if you are not using FlashAttention.")
 
 
 logger = logging.get_logger(__name__)
