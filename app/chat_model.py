@@ -27,7 +27,7 @@ class ChatModel:
         model_args, data_args, finetuning_args, self.generating_args = get_infer_args(args)
         self.can_generate = (finetuning_args.stage == "sft")
         self.model, self.tokenizer = load_model_and_tokenizer(
-            model_args, finetuning_args, is_trainable=False, add_valuehead=(not self.can_generate)
+            model_args, finetuning_args, is_trainable=False, #add_valuehead=(not self.can_generate)
         )
         self.tokenizer.padding_side = "left" if self.can_generate else "right"
         # self.model = dispatch_model(self.model)
